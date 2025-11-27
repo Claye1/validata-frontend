@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
-export default function Results() {
+function ResultsContent() {
   const [results, setResults] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -95,7 +95,6 @@ export default function Results() {
         <div className="max-w-4xl mx-auto">
           <h2 className="text-3xl font-bold text-gray-900 mb-8">Validation Results</h2>
 
-          {/* Quality Score Card */}
           <div className={`rounded-lg border-2 p-8 mb-8 ${getScoreBgColor(results.score)}`}>
             <div className="text-center">
               <p className="text-gray-700 text-lg mb-2">Overall Quality Score</p>
@@ -110,7 +109,6 @@ export default function Results() {
             </div>
           </div>
 
-          {/* Issues Breakdown */}
           <div className="bg-white rounded-lg shadow-lg p-8 mb-8">
             <h3 className="text-2xl font-semibold text-gray-900 mb-6">Issues Found</h3>
             
@@ -133,7 +131,6 @@ export default function Results() {
             </div>
           </div>
 
-          {/* Actions */}
           <div className="bg-white rounded-lg shadow-lg p-8">
             <h3 className="text-2xl font-semibold text-gray-900 mb-6">Next Steps</h3>
             
@@ -161,7 +158,6 @@ export default function Results() {
             </div>
           </div>
 
-          {/* Recommendations */}
           <div className="mt-8 bg-white rounded-lg shadow-lg p-8">
             <h3 className="text-xl font-semibold text-gray-900 mb-4">Recommendations</h3>
             <ul className="space-y-3 text-gray-700">
@@ -188,5 +184,20 @@ export default function Results() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function Results() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <ResultsContent />
+    </Suspense>
   );
 }
