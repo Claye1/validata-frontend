@@ -99,20 +99,20 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      <nav className="bg-white shadow-sm">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-indigo-600">Validata</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-700">{email}</span>
-            <button
-              onClick={handleLogout}
-              className="text-gray-600 hover:text-gray-900"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-      </nav>
+     <nav className="bg-white shadow-sm">
+  <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+    <h1 className="text-2xl font-bold text-indigo-600">Validata</h1>
+    <div className="flex items-center gap-4">
+      <button onClick={() => router.push('/history')} className="text-gray-600 hover:text-gray-900">
+        History
+      </button>
+      <span className="text-gray-700">{email}</span>
+      <button onClick={handleLogout} className="text-gray-600 hover:text-gray-900">
+        Logout
+      </button>
+    </div>
+  </div>
+</nav>
 
       <div className="container mx-auto px-4 py-12">
         <div className="max-w-2xl mx-auto">
