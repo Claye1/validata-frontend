@@ -1,10 +1,7 @@
 'use client';
-
+import { generateValidationReport } from '@/lib/pdfGenerator';
 import { useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { generateValidationReport } from '@/lib/pdfGenerator';
-
-// ... rest of the file stays the same
 
 export default function ResultsPage() {
   return (
