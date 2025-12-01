@@ -1,301 +1,348 @@
-'use client';
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+import jwt
+import bcrypt
+from datetime import datetime, timedelta
+import pandas as pd
+import io
+import os
+from dotenv import load_dotenv
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+load_dotenv()
 
-export default function Home() {
-  const router = useRouter();
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [generatingSynthetic, setGeneratingSynthetic] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
-      setError(null);
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Models
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    password_hash = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Dataset(Base):
+    __tablename__ = "datasets"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_email = Column(String)
+    filename = Column(String)
+    rows = Column(Integer)
+    columns = Column(Text)
+    csv_data = Column(Text)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+class Validation(Base):
+    __tablename__ = "validations"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer)
+    score = Column(Integer)
+    missing = Column(Integer)
+    duplicates = Column(Integer)
+    type_errors = Column(Integer)
+    out_of_range = Column(Integer)
+    invalid_patterns = Column(Integer)
+    outliers = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+# Create tables
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-later")
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Pydantic models
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+# Helper functions
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+def create_token(email: str) -> str:
+    payload = {
+        "email": email,
+        "exp": datetime.utcnow() + timedelta(days=7)
     }
-  };
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
-  const handleUpload = async () => {
-    if (!file) {
-      setError('Please select a file first');
-      return;
+# Routes
+@app.get("/")
+def read_root():
+    return {"message": "Validata API is running"}
+
+@app.post("/auth/signup")
+def signup(request: SignupRequest, db: Session = Depends(get_db)):
+    # Check if user exists
+    existing = db.query(User).filter(User.email == request.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    hashed = hash_password(request.password)
+    user = User(email=request.email, password_hash=hashed)
+    db.add(user)
+    db.commit()
+    
+    token = create_token(request.email)
+    return {"token": token, "email": request.email}
+
+@app.post("/auth/login")
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    token = create_token(request.email)
+    return {"token": token, "email": request.email}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+        
+        # Store dataset
+        dataset = Dataset(
+            user_email="anonymous",
+            filename=file.filename,
+            rows=len(df),
+            columns=str(list(df.columns)),
+            csv_data=contents.decode('utf-8')
+        )
+        db.add(dataset)
+        db.commit()
+        db.refresh(dataset)
+        
+        return {
+            "dataset_id": dataset.id,
+            "filename": file.filename,
+            "rows": len(df),
+            "columns": len(df.columns)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/dataset/{dataset_id}")
+def get_dataset(dataset_id: int, db: Session = Depends(get_db)):
+    """Get dataset information for PDF generation"""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    return {
+        "filename": dataset.filename,
+        "rows": dataset.rows,
+        "uploaded_at": dataset.uploaded_at.isoformat()
     }
 
-    setUploading(true);
-    setError(null);
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-      const response = await fetch('https://validata-backend-production.up.railway.app/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error('Upload failed');
-      }
-
-      const data = await response.json();
-      router.push(`/results?id=${data.dataset_id}`);
-    } catch (err: any) {
-      setError(err.message || 'Failed to upload file');
-    } finally {
-      setUploading(false);
+@app.post("/validate/{dataset_id}")
+def validate_dataset(dataset_id: int, db: Session = Depends(get_db)):
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Parse CSV
+    df = pd.read_csv(io.StringIO(dataset.csv_data))
+    
+    # 1. Missing values
+    missing_values = int(df.isnull().sum().sum())
+    
+    # 2. Duplicate rows
+    duplicate_rows = int(df.duplicated().sum())
+    
+    # 3. Type errors
+    type_errors = 0
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            try:
+                numeric_conversion = pd.to_numeric(df[col], errors='coerce')
+                if numeric_conversion.notna().sum() > len(df) * 0.5:
+                    type_errors += int(numeric_conversion.isna().sum())
+            except:
+                pass
+    
+    # 4. Out of range
+    out_of_range = 0
+    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 3 * IQR
+        upper_bound = Q3 + 3 * IQR
+        out_of_range += int(((df[col] < lower_bound) | (df[col] > upper_bound)).sum())
+    
+    # 5. Invalid patterns
+    invalid_patterns = 0
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            if any(keyword in col.lower() for keyword in ['email', 'mail']):
+                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                invalid_patterns += int((~df[col].astype(str).str.match(email_pattern)).sum())
+    
+    # 6. Outliers (Z-score > 3)
+    outliers = 0
+    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+        mean = df[col].mean()
+        std = df[col].std()
+        if std > 0:
+            z_scores = abs((df[col] - mean) / std)
+            outliers += int((z_scores > 3).sum())
+    
+    # Calculate score
+    total_issues = missing_values + duplicate_rows + type_errors + out_of_range + invalid_patterns + outliers
+    total_cells = len(df) * len(df.columns)
+    score = max(0, int(100 - (total_issues / total_cells) * 100))
+    
+    # Store validation
+    validation = Validation(
+        dataset_id=dataset_id,
+        score=score,
+        missing=missing_values,
+        duplicates=duplicate_rows,
+        type_errors=type_errors,
+        out_of_range=out_of_range,
+        invalid_patterns=invalid_patterns,
+        outliers=outliers
+    )
+    db.add(validation)
+    db.commit()
+    db.refresh(validation)
+    
+    return {
+        "id": validation.id,
+        "dataset_id": dataset_id,
+        "score": score,
+        "total_issues": total_issues,
+        "issues": {
+            "missing_values": missing_values,
+            "duplicate_rows": duplicate_rows,
+            "type_errors": type_errors,
+            "out_of_range": out_of_range,
+            "invalid_patterns": invalid_patterns,
+            "outliers": outliers
+        },
+        "details": {
+            "total_cells": total_cells,
+            "total_rows": len(df),
+            "total_columns": len(df.columns)
+        },
+        "created_at": validation.created_at.isoformat()
     }
-  };
 
-  const handleGenerateSynthetic = async () => {
-    setGeneratingSynthetic(true);
-    setError(null);
-
-    try {
-      const response = await fetch('https://validata-backend-production.up.railway.app/generate-synthetic', {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate synthetic data');
-      }
-
-      const data = await response.json();
-      router.push(`/results?id=${data.dataset_id}`);
-    } catch (err: any) {
-      setError(err.message || 'Failed to generate synthetic data');
-    } finally {
-      setGeneratingSynthetic(false);
+@app.get("/validate/{dataset_id}")
+def get_validation(dataset_id: int, db: Session = Depends(get_db)):
+    validation = db.query(Validation).filter(Validation.dataset_id == dataset_id).order_by(Validation.created_at.desc()).first()
+    if not validation:
+        raise HTTPException(status_code=404, detail="Validation not found")
+    
+    return {
+        "id": validation.id,
+        "dataset_id": validation.dataset_id,
+        "score": validation.score,
+        "total_issues": (
+            validation.missing + 
+            validation.duplicates + 
+            validation.type_errors + 
+            validation.out_of_range + 
+            validation.invalid_patterns + 
+            validation.outliers
+        ),
+        "issues": {
+            "missing_values": validation.missing,
+            "duplicate_rows": validation.duplicates,
+            "type_errors": validation.type_errors,
+            "out_of_range": validation.out_of_range,
+            "invalid_patterns": validation.invalid_patterns,
+            "outliers": validation.outliers
+        },
+        "details": {},
+        "created_at": validation.created_at.isoformat()
     }
-  };
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
-      {/* Navigation */}
-      <nav className="bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-xl">V</span>
-              </div>
-              <span className="text-2xl font-bold text-gray-900">Validata</span>
-            </div>
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={() => router.push('/login')}
-                className="text-gray-600 hover:text-gray-900 font-medium"
-              >
-                Log in
-              </button>
-              <button
-                onClick={() => router.push('/signup')}
-                className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition"
-              >
-                Sign up
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
-
-      {/* Hero Section */}
-      <div className="max-w-7xl mx-auto px-6 py-20">
-        <div className="text-center mb-16">
-          <h1 className="text-6xl font-bold text-gray-900 mb-6">
-            Automated Health Validation Platform
-          </h1>
-          <p className="text-xl text-gray-600 max-w-3xl mx-auto mb-8">
-            Upload your datasets, get instant quality scores, detect issues automatically, 
-            and generate privacy-safe synthetic data.
-          </p>
-        </div>
-
-        {/* Main Upload Card */}
-        <div className="max-w-2xl mx-auto">
-          <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-200">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6 text-center">
-              Get Started
-            </h2>
-
-            {/* Error Message */}
-            {error && (
-              <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-red-600 text-sm">{error}</p>
-              </div>
-            )}
-
-            {/* Instant Validation Section */}
-            <div className="mb-8">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <span className="bg-indigo-100 text-indigo-600 w-8 h-8 rounded-full flex items-center justify-center mr-3 text-sm font-bold">
-                  1
-                </span>
-                Instant Validation
-              </h3>
-              <div className="space-y-4">
-                <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-indigo-400 transition">
-                  <input
-                    type="file"
-                    accept=".csv"
-                    onChange={handleFileChange}
-                    className="hidden"
-                    id="file-upload"
-                  />
-                  <label
-                    htmlFor="file-upload"
-                    className="cursor-pointer flex flex-col items-center"
-                  >
-                    <svg
-                      className="w-16 h-16 text-gray-400 mb-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                      />
-                    </svg>
-                    <span className="text-gray-700 font-medium mb-2">
-                      {file ? file.name : 'Click to upload CSV file'}
-                    </span>
-                    <span className="text-sm text-gray-500">
-                      or drag and drop
-                    </span>
-                  </label>
-                </div>
-
-                <button
-                  onClick={handleUpload}
-                  disabled={!file || uploading}
-                  className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed shadow-lg"
-                >
-                  {uploading ? (
-                    <span className="flex items-center justify-center">
-                      <svg
-                        className="animate-spin h-5 w-5 mr-3"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                          fill="none"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        />
-                      </svg>
-                      Uploading...
-                    </span>
-                  ) : (
-                    '📊 Upload & Validate'
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {/* Divider */}
-            <div className="relative my-8">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-300"></div>
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-4 bg-white text-gray-500 font-medium">
-                  OR
-                </span>
-              </div>
-            </div>
-
-            {/* Synthetic Data Section */}
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <span className="bg-purple-100 text-purple-600 w-8 h-8 rounded-full flex items-center justify-center mr-3 text-sm font-bold">
-                  2
-                </span>
-                Generate Synthetic Data
-              </h3>
-              <p className="text-gray-600 text-sm mb-4">
-                Don't have data? Try our synthetic customer dataset with intentional quality issues.
-              </p>
-              <button
-                onClick={handleGenerateSynthetic}
-                disabled={generatingSynthetic}
-                className="w-full bg-purple-600 text-white py-4 rounded-lg font-semibold hover:bg-purple-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed shadow-lg"
-              >
-                {generatingSynthetic ? (
-                  <span className="flex items-center justify-center">
-                    <svg
-                      className="animate-spin h-5 w-5 mr-3"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      />
-                    </svg>
-                    Generating...
-                  </span>
-                ) : (
-                  '🎲 Generate Synthetic Data'
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Features Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
-            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200">
-              <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
-                <span className="text-2xl">🔍</span>
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-2">Instant Validation</h3>
-              <p className="text-sm text-gray-600">
-                Detect missing values, duplicates, type errors, and outliers automatically.
-              </p>
-            </div>
-
-            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200">
-              <div className="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center mb-4">
-                <span className="text-2xl">📊</span>
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-2">Error Detection</h3>
-              <p className="text-sm text-gray-600">
-                Comprehensive analysis with 6 different quality checks and detailed reports.
-              </p>
-            </div>
-
-            <div className="bg-white rounded-xl p-6 shadow-md border border-gray-200">
-              <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
-                <span className="text-2xl">📄</span>
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-2">Synthetic Data</h3>
-              <p className="text-sm text-gray-600">
-                Generate privacy-safe test datasets with realistic quality issues.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+@app.post("/generate-synthetic")
+async def generate_synthetic_data(db: Session = Depends(get_db)):
+    """Generate synthetic customer data for testing"""
+    import random
+    from io import StringIO
+    
+    # Generate 100 rows of synthetic data
+    num_rows = 100
+    
+    data = {
+        'customer_id': list(range(1, num_rows + 1)),
+        'name': [f"Customer {i}" for i in range(1, num_rows + 1)],
+        'email': [f"customer{i}@example.com" if random.random() > 0.05 else "" for i in range(1, num_rows + 1)],
+        'age': [random.randint(18, 80) if random.random() > 0.03 else None for _ in range(num_rows)],
+        'purchase_amount': [round(random.uniform(10, 1000), 2) if random.random() > 0.02 else None for _ in range(num_rows)],
+        'signup_date': [f"2024-{random.randint(1,12):02d}-{random.randint(1,28):02d}" for _ in range(num_rows)]
+    }
+    
+    # Add some duplicates
+    for i in range(5):
+        idx = random.randint(0, num_rows - 1)
+        data['customer_id'][idx] = data['customer_id'][random.randint(0, num_rows - 1)]
+    
+    # Create DataFrame
+    df = pd.DataFrame(data)
+    
+    # Convert to CSV string
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_string = csv_buffer.getvalue()
+    
+    # Store dataset
+    dataset = Dataset(
+        user_email="synthetic",
+        filename="synthetic_customer_data.csv",
+        rows=len(df),
+        columns=str(list(df.columns)),
+        csv_data=csv_string
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+    
+    return {
+        "dataset_id": dataset.id,
+        "filename": "synthetic_customer_data.csv",
+        "rows": len(df),
+        "columns": len(df.columns),
+        "message": "Synthetic data generated successfully"
+    }
