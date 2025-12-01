@@ -1,348 +1,305 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-import jwt
-import bcrypt
-from datetime import datetime, timedelta
-import pandas as pd
-import io
-import os
-from dotenv import load_dotenv
+'use client';
 
-load_dotenv()
+import { useEffect, useState, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { generateValidationReport } from '../../lib/pdfGenerator';
 
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+export default function ResultsPage() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
+      <Suspense fallback={<LoadingFallback />}>
+        <ResultsContent />
+      </Suspense>
+    </div>
+  );
+}
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+function LoadingFallback() {
+  return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600 mx-auto"></div>
+        <p className="mt-4 text-gray-600">Loading validation results...</p>
+      </div>
+    </div>
+  );
+}
 
-# Models
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    password_hash = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+function ResultsContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const datasetId = searchParams.get('id');
 
-class Dataset(Base):
-    __tablename__ = "datasets"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_email = Column(String)
-    filename = Column(String)
-    rows = Column(Integer)
-    columns = Column(Text)
-    csv_data = Column(Text)
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
+  const [results, setResults] = useState<any>(null);
+  const [datasetInfo, setDatasetInfo] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-class Validation(Base):
-    __tablename__ = "validations"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer)
-    score = Column(Integer)
-    missing = Column(Integer)
-    duplicates = Column(Integer)
-    type_errors = Column(Integer)
-    out_of_range = Column(Integer)
-    invalid_patterns = Column(Integer)
-    outliers = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-later")
-
-# Dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Pydantic models
-class SignupRequest(BaseModel):
-    email: str
-    password: str
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-# Helper functions
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed.encode())
-
-def create_token(email: str) -> str:
-    payload = {
-        "email": email,
-        "exp": datetime.utcnow() + timedelta(days=7)
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-
-# Routes
-@app.get("/")
-def read_root():
-    return {"message": "Validata API is running"}
-
-@app.post("/auth/signup")
-def signup(request: SignupRequest, db: Session = Depends(get_db)):
-    # Check if user exists
-    existing = db.query(User).filter(User.email == request.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create user
-    hashed = hash_password(request.password)
-    user = User(email=request.email, password_hash=hashed)
-    db.add(user)
-    db.commit()
-    
-    token = create_token(request.email)
-    return {"token": token, "email": request.email}
-
-@app.post("/auth/login")
-def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == request.email).first()
-    if not user or not verify_password(request.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    token = create_token(request.email)
-    return {"token": token, "email": request.email}
-
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    try:
-        contents = await file.read()
-        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
-        
-        # Store dataset
-        dataset = Dataset(
-            user_email="anonymous",
-            filename=file.filename,
-            rows=len(df),
-            columns=str(list(df.columns)),
-            csv_data=contents.decode('utf-8')
-        )
-        db.add(dataset)
-        db.commit()
-        db.refresh(dataset)
-        
-        return {
-            "dataset_id": dataset.id,
-            "filename": file.filename,
-            "rows": len(df),
-            "columns": len(df.columns)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/dataset/{dataset_id}")
-def get_dataset(dataset_id: int, db: Session = Depends(get_db)):
-    """Get dataset information for PDF generation"""
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    return {
-        "filename": dataset.filename,
-        "rows": dataset.rows,
-        "uploaded_at": dataset.uploaded_at.isoformat()
+  useEffect(() => {
+    if (!datasetId) {
+      setError('No dataset ID provided');
+      setLoading(false);
+      return;
     }
 
-@app.post("/validate/{dataset_id}")
-def validate_dataset(dataset_id: int, db: Session = Depends(get_db)):
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    # Parse CSV
-    df = pd.read_csv(io.StringIO(dataset.csv_data))
-    
-    # 1. Missing values
-    missing_values = int(df.isnull().sum().sum())
-    
-    # 2. Duplicate rows
-    duplicate_rows = int(df.duplicated().sum())
-    
-    # 3. Type errors
-    type_errors = 0
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            try:
-                numeric_conversion = pd.to_numeric(df[col], errors='coerce')
-                if numeric_conversion.notna().sum() > len(df) * 0.5:
-                    type_errors += int(numeric_conversion.isna().sum())
-            except:
-                pass
-    
-    # 4. Out of range
-    out_of_range = 0
-    for col in df.select_dtypes(include=['int64', 'float64']).columns:
-        Q1 = df[col].quantile(0.25)
-        Q3 = df[col].quantile(0.75)
-        IQR = Q3 - Q1
-        lower_bound = Q1 - 3 * IQR
-        upper_bound = Q3 + 3 * IQR
-        out_of_range += int(((df[col] < lower_bound) | (df[col] > upper_bound)).sum())
-    
-    # 5. Invalid patterns
-    invalid_patterns = 0
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            if any(keyword in col.lower() for keyword in ['email', 'mail']):
-                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-                invalid_patterns += int((~df[col].astype(str).str.match(email_pattern)).sum())
-    
-    # 6. Outliers (Z-score > 3)
-    outliers = 0
-    for col in df.select_dtypes(include=['int64', 'float64']).columns:
-        mean = df[col].mean()
-        std = df[col].std()
-        if std > 0:
-            z_scores = abs((df[col] - mean) / std)
-            outliers += int((z_scores > 3).sum())
-    
-    # Calculate score
-    total_issues = missing_values + duplicate_rows + type_errors + out_of_range + invalid_patterns + outliers
-    total_cells = len(df) * len(df.columns)
-    score = max(0, int(100 - (total_issues / total_cells) * 100))
-    
-    # Store validation
-    validation = Validation(
-        dataset_id=dataset_id,
-        score=score,
-        missing=missing_values,
-        duplicates=duplicate_rows,
-        type_errors=type_errors,
-        out_of_range=out_of_range,
-        invalid_patterns=invalid_patterns,
-        outliers=outliers
-    )
-    db.add(validation)
-    db.commit()
-    db.refresh(validation)
-    
-    return {
-        "id": validation.id,
-        "dataset_id": dataset_id,
-        "score": score,
-        "total_issues": total_issues,
-        "issues": {
-            "missing_values": missing_values,
-            "duplicate_rows": duplicate_rows,
-            "type_errors": type_errors,
-            "out_of_range": out_of_range,
-            "invalid_patterns": invalid_patterns,
-            "outliers": outliers
-        },
-        "details": {
-            "total_cells": total_cells,
-            "total_rows": len(df),
-            "total_columns": len(df.columns)
-        },
-        "created_at": validation.created_at.isoformat()
-    }
+    fetchResults();
+  }, [datasetId]);
 
-@app.get("/validate/{dataset_id}")
-def get_validation(dataset_id: int, db: Session = Depends(get_db)):
-    validation = db.query(Validation).filter(Validation.dataset_id == dataset_id).order_by(Validation.created_at.desc()).first()
-    if not validation:
-        raise HTTPException(status_code=404, detail="Validation not found")
-    
-    return {
-        "id": validation.id,
-        "dataset_id": validation.dataset_id,
-        "score": validation.score,
-        "total_issues": (
-            validation.missing + 
-            validation.duplicates + 
-            validation.type_errors + 
-            validation.out_of_range + 
-            validation.invalid_patterns + 
-            validation.outliers
-        ),
-        "issues": {
-            "missing_values": validation.missing,
-            "duplicate_rows": validation.duplicates,
-            "type_errors": validation.type_errors,
-            "out_of_range": validation.out_of_range,
-            "invalid_patterns": validation.invalid_patterns,
-            "outliers": validation.outliers
-        },
-        "details": {},
-        "created_at": validation.created_at.isoformat()
-    }
+  const fetchResults = async () => {
+    try {
+      const response = await fetch(`https://validata-backend-production.up.railway.app/validate/${datasetId}`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch results');
+      }
 
-@app.post("/generate-synthetic")
-async def generate_synthetic_data(db: Session = Depends(get_db)):
-    """Generate synthetic customer data for testing"""
-    import random
-    from io import StringIO
-    
-    # Generate 100 rows of synthetic data
-    num_rows = 100
-    
-    data = {
-        'customer_id': list(range(1, num_rows + 1)),
-        'name': [f"Customer {i}" for i in range(1, num_rows + 1)],
-        'email': [f"customer{i}@example.com" if random.random() > 0.05 else "" for i in range(1, num_rows + 1)],
-        'age': [random.randint(18, 80) if random.random() > 0.03 else None for _ in range(num_rows)],
-        'purchase_amount': [round(random.uniform(10, 1000), 2) if random.random() > 0.02 else None for _ in range(num_rows)],
-        'signup_date': [f"2024-{random.randint(1,12):02d}-{random.randint(1,28):02d}" for _ in range(num_rows)]
+      const data = await response.json();
+      setResults(data);
+      
+      // Fetch dataset info for PDF generation
+      const datasetResponse = await fetch(`https://validata-backend-production.up.railway.app/dataset/${datasetId}`);
+      if (datasetResponse.ok) {
+        const datasetData = await datasetResponse.json();
+        setDatasetInfo(datasetData);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to load results');
+    } finally {
+      setLoading(false);
     }
-    
-    # Add some duplicates
-    for i in range(5):
-        idx = random.randint(0, num_rows - 1)
-        data['customer_id'][idx] = data['customer_id'][random.randint(0, num_rows - 1)]
-    
-    # Create DataFrame
-    df = pd.DataFrame(data)
-    
-    # Convert to CSV string
-    csv_buffer = StringIO()
-    df.to_csv(csv_buffer, index=False)
-    csv_string = csv_buffer.getvalue()
-    
-    # Store dataset
-    dataset = Dataset(
-        user_email="synthetic",
-        filename="synthetic_customer_data.csv",
-        rows=len(df),
-        columns=str(list(df.columns)),
-        csv_data=csv_string
-    )
-    db.add(dataset)
-    db.commit()
-    db.refresh(dataset)
-    
-    return {
-        "dataset_id": dataset.id,
-        "filename": "synthetic_customer_data.csv",
-        "rows": len(df),
-        "columns": len(df.columns),
-        "message": "Synthetic data generated successfully"
+  };
+
+  if (loading) {
+    return <LoadingFallback />;
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md">
+          <h2 className="text-red-800 font-semibold text-lg mb-2">Error</h2>
+          <p className="text-red-600">{error}</p>
+          <button
+            onClick={() => router.push('/')}
+            className="mt-4 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition"
+          >
+            Return to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!results) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <p className="text-gray-600">No results found</p>
+          <button
+            onClick={() => router.push('/')}
+            className="mt-4 bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition"
+          >
+            Return to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const getScoreColor = (score: number) => {
+    if (score >= 90) return 'text-green-600';
+    if (score >= 70) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  const getScoreBgColor = (score: number) => {
+    if (score >= 90) return 'bg-green-50 border-green-200';
+    if (score >= 70) return 'bg-yellow-50 border-yellow-200';
+    return 'bg-red-50 border-red-200';
+  };
+
+  const getScoreStatus = (score: number) => {
+    if (score >= 90) return 'Excellent Quality';
+    if (score >= 70) return 'Good Quality';
+    return 'Needs Improvement';
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto px-6 py-12">
+      {/* Header */}
+      <div className="mb-8">
+        <button
+          onClick={() => router.push('/')}
+          className="text-indigo-600 hover:text-indigo-700 font-medium mb-4 inline-flex items-center"
+        >
+          ← Back to Home
+        </button>
+        <h1 className="text-4xl font-bold text-gray-900 mb-2">Validation Results</h1>
+        <p className="text-gray-600">
+          {datasetInfo ? `Dataset: ${datasetInfo.filename}` : 'Your data quality report'}
+        </p>
+      </div>
+
+      {/* Quality Score Card */}
+      <div className={`border-2 rounded-2xl p-8 mb-8 ${getScoreBgColor(results.score)}`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Overall Quality Score</h2>
+            <p className={`text-6xl font-bold ${getScoreColor(results.score)}`}>
+              {results.score}%
+            </p>
+            <p className={`text-lg font-semibold mt-2 ${getScoreColor(results.score)}`}>
+              {getScoreStatus(results.score)}
+            </p>
+          </div>
+          <div className="text-right">
+            <div className="bg-white rounded-lg p-4 shadow-sm">
+              <p className="text-sm text-gray-600 mb-1">Total Issues</p>
+              <p className="text-3xl font-bold text-gray-900">{results.total_issues}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Issues Breakdown */}
+      <div className="bg-white rounded-2xl shadow-lg p-8 mb-8">
+        <h2 className="text-2xl font-bold text-gray-900 mb-6">Issues Detected</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <IssueCard
+            title="Missing Values"
+            count={results.issues.missing_values}
+            icon="🔍"
+            severity="high"
+          />
+          <IssueCard
+            title="Duplicate Rows"
+            count={results.issues.duplicate_rows}
+            icon="📋"
+            severity="medium"
+          />
+          <IssueCard
+            title="Type Errors"
+            count={results.issues.type_errors}
+            icon="⚠️"
+            severity="high"
+          />
+          <IssueCard
+            title="Out of Range"
+            count={results.issues.out_of_range}
+            icon="📊"
+            severity="medium"
+          />
+          <IssueCard
+            title="Invalid Patterns"
+            count={results.issues.invalid_patterns}
+            icon="🔤"
+            severity="low"
+          />
+          <IssueCard
+            title="Outliers"
+            count={results.issues.outliers}
+            icon="📈"
+            severity="low"
+          />
+        </div>
+      </div>
+
+      {/* Recommendations */}
+      {results.total_issues > 0 && (
+        <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-8 mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">💡 Recommendations</h2>
+          <ul className="space-y-3">
+            {results.issues.missing_values > 0 && (
+              <li className="flex items-start">
+                <span className="text-blue-600 mr-2">•</span>
+                <span className="text-gray-700">
+                  Address <strong>{results.issues.missing_values}</strong> missing values before production use
+                </span>
+              </li>
+            )}
+            {results.issues.type_errors > 0 && (
+              <li className="flex items-start">
+                <span className="text-blue-600 mr-2">•</span>
+                <span className="text-gray-700">
+                  Fix <strong>{results.issues.type_errors}</strong> type errors to ensure data consistency
+                </span>
+              </li>
+            )}
+            {results.issues.duplicate_rows > 0 && (
+              <li className="flex items-start">
+                <span className="text-blue-600 mr-2">•</span>
+                <span className="text-gray-700">
+                  Remove <strong>{results.issues.duplicate_rows}</strong> duplicate rows to improve accuracy
+                </span>
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* Action Buttons */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <button
+          onClick={() => {
+            if (results && datasetInfo) {
+              generateValidationReport(results, datasetInfo);
+            }
+          }}
+          className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold hover:bg-indigo-700 transition shadow-lg"
+        >
+          📄 Download Full Report (PDF)
+        </button>
+        <button
+          onClick={() => router.push('/')}
+          className="w-full bg-gray-200 text-gray-800 py-4 rounded-lg font-semibold hover:bg-gray-300 transition"
+        >
+          🔄 Validate Another Dataset
+        </button>
+      </div>
+
+      {/* Dataset Info */}
+      {datasetInfo && (
+        <div className="mt-8 text-center text-sm text-gray-500">
+          <p>Validated on {new Date(results.created_at).toLocaleString()}</p>
+          <p>Rows analyzed: {datasetInfo.rows.toLocaleString()}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IssueCard({ title, count, icon, severity }: { 
+  title: string; 
+  count: number; 
+  icon: string; 
+  severity: 'high' | 'medium' | 'low' 
+}) {
+  const getSeverityColor = () => {
+    switch (severity) {
+      case 'high': return 'border-red-300 bg-red-50';
+      case 'medium': return 'border-yellow-300 bg-yellow-50';
+      case 'low': return 'border-blue-300 bg-blue-50';
     }
+  };
+
+  const getSeverityBadge = () => {
+    switch (severity) {
+      case 'high': return 'bg-red-100 text-red-700';
+      case 'medium': return 'bg-yellow-100 text-yellow-700';
+      case 'low': return 'bg-blue-100 text-blue-700';
+    }
+  };
+
+  return (
+    <div className={`border-2 rounded-lg p-4 ${getSeverityColor()}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-2xl">{icon}</span>
+        <span className={`text-xs font-semibold px-2 py-1 rounded ${getSeverityBadge()}`}>
+          {severity.toUpperCase()}
+        </span>
+      </div>
+      <h3 className="font-semibold text-gray-900 mb-1">{title}</h3>
+      <p className="text-2xl font-bold text-gray-900">{count}</p>
+    </div>
+  );
+}
