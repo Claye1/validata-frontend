@@ -1,12 +1,26 @@
 'use client';
-import { generateValidationReport } from '@/lib/pdfGenerator';
-import { useEffect, useState } from 'react';
+
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import { generateValidationReport } from '@/lib/pdfGenerator';
 
 export default function ResultsPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
-      <ResultsContent />
+      <Suspense fallback={<LoadingFallback />}>
+        <ResultsContent />
+      </Suspense>
+    </div>
+  );
+}
+
+function LoadingFallback() {
+  return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600 mx-auto"></div>
+        <p className="mt-4 text-gray-600">Loading validation results...</p>
+      </div>
     </div>
   );
 }
@@ -56,14 +70,7 @@ function ResultsContent() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading validation results...</p>
-        </div>
-      </div>
-    );
+    return <LoadingFallback />;
   }
 
   if (error) {
