@@ -2,9 +2,11 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { generateValidationReport } from '@/lib/pdfGenerator';
 
 function ResultsContent() {
   const [results, setResults] = useState<any>(null);
+  const [datasetInfo, setDatasetInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const router = useRouter();
@@ -25,6 +27,12 @@ function ResultsContent() {
       if (!response.ok) throw new Error('Failed to fetch results');
       const data = await response.json();
       setResults(data);
+      
+      const datasetResponse = await fetch(`https://validata-backend-production.up.railway.app/dataset/${datasetId}`);
+      if (datasetResponse.ok) {
+        const datasetData = await datasetResponse.json();
+        setDatasetInfo(datasetData);
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load results');
     } finally {
@@ -105,7 +113,16 @@ function ResultsContent() {
           <div className="bg-white rounded-lg shadow-lg p-8 mb-8">
             <h3 className="text-2xl font-semibold text-gray-900 mb-6">Next Steps</h3>
             <div className="space-y-4">
-              <button onClick={() => alert('PDF download coming in Phase 3!')} className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700">📄 Download Full Report (PDF)</button>
+              <button
+                onClick={() => {
+                  if (results && datasetInfo) {
+                    generateValidationReport(results, datasetInfo);
+                  }
+                }}
+                className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition"
+              >
+                📄 Download Full Report (PDF)
+              </button>
               <button onClick={() => alert('Synthetic data coming soon!')} className="w-full bg-white text-indigo-600 border-2 border-indigo-600 py-3 rounded-lg font-semibold hover:bg-indigo-50">🔒 Generate Synthetic Data</button>
               <button onClick={() => router.push('/dashboard')} className="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200">⬆️ Upload Another Dataset</button>
             </div>
