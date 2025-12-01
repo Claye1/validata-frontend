@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { generateValidationReport } from '@/lib/pdfGenerator';
+import { generateValidationReport } from '../../lib/pdfGenerator';  // ← Changed this line
+
+// ... rest of the file stays the same
 
 export default function ResultsPage() {
   return (
