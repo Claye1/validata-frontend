@@ -29,19 +29,32 @@ export default function Home() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('https://validata-backend-production.up.railway.app/upload', {
+      // Step 1: Upload the file
+      const uploadResponse = await fetch('https://validata-backend-production.up.railway.app/upload', {
         method: 'POST',
         body: formData,
       });
 
-      if (!response.ok) {
+      if (!uploadResponse.ok) {
         throw new Error('Upload failed');
       }
 
-      const data = await response.json();
-      router.push(`/results?id=${data.dataset_id}`);
+      const uploadData = await uploadResponse.json();
+      const datasetId = uploadData.dataset_id;
+
+      // Step 2: Trigger validation
+      const validateResponse = await fetch(`https://validata-backend-production.up.railway.app/validate/${datasetId}`, {
+        method: 'POST',
+      });
+
+      if (!validateResponse.ok) {
+        throw new Error('Validation failed');
+      }
+
+      // Step 3: Redirect to results
+      router.push(`/results?id=${datasetId}`);
     } catch (err: any) {
-      setError(err.message || 'Failed to upload file');
+      setError(err.message || 'Failed to upload and validate file');
     } finally {
       setUploading(false);
     }
@@ -165,7 +178,7 @@ export default function Home() {
                         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                       />
                     </svg>
-                    Uploading...
+                    Validating...
                   </span>
                 ) : (
                   '📊 Upload & Validate'
